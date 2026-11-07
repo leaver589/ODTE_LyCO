@@ -1,0 +1,75 @@
+{
+  "board": "RK3566",
+  "scenario": "S1",
+  "seed": 0,
+  "sensors": 8,
+  "slot_seconds": 0.1,
+  "total_slots": 54000,
+  "warmup_slots": 200,
+  "cpu_math_threads": 1,
+  "simulation_baselines": "Online training on CPU in Tables III / Figure 5; frozen FP16 NPU inference for the archived Table V board test.",
+  "timing_source": "Original computational_cost.csv files from board_unified_20261013_run1, 2026-10-13.",
+  "power_source": "Author-reported total-board power readings, transcribed from manuscript Table V; the timing CSVs do not contain power measurements.",
+  "methods": [
+    {
+      "method": "Base",
+      "parameters": 0,
+      "throughput_slots_per_s": 42.433483509159835,
+      "p95_ms": 49.535029949999995,
+      "power_w": 1.79,
+      "backend": "numpy_float32_cpu",
+      "source_run": "method4_full_run1",
+      "source_csv_sha256": "896192b3d0b86380dd5b98aef9cd39e44322c2d3ab9cf1b1cc3e148d4d01e614",
+      "controller_seconds": 1267.866683356,
+      "measured_slots": 53800
+    },
+    {
+      "method": "Base+DW",
+      "parameters": 0,
+      "throughput_slots_per_s": 36.03173775890964,
+      "p95_ms": 59.0383723,
+      "power_w": 1.829,
+      "backend": "numpy_float32_cpu",
+      "source_run": "method5_full_run1",
+      "source_csv_sha256": "9cd83350cfa42d4ae9d20fb9ddd6a2fc38fbbd8393cd3dac21e0d2d06c8caa6b",
+      "controller_seconds": 1493.128096124,
+      "measured_slots": 53800
+    },
+    {
+      "method": "ODTE-LyCO",
+      "parameters": 0,
+      "throughput_slots_per_s": 42.8438495750714,
+      "p95_ms": 51.570686299999984,
+      "power_w": 1.835,
+      "backend": "numpy_float32_cpu",
+      "source_run": "method1_full_run1",
+      "source_csv_sha256": "c06f03f79b716f9f356896c2b9b9ed52456d0bed655b8711a467e66c5b30fc61",
+      "controller_seconds": 1255.722829148,
+      "measured_slots": 53800
+    },
+    {
+      "method": "LyDROO",
+      "parameters": 40328,
+      "throughput_slots_per_s": 25.453770279785783,
+      "p95_ms": 75.26572969999995,
+      "power_w": 1.909,
+      "backend": "rknn_float16_npu_cpu_controller",
+      "source_run": "method2_full_run1",
+      "source_csv_sha256": "0cb5f16b4c9c467cabda0d41c46f864190e19e2c1dbf79bc90f884232c4ae365",
+      "controller_seconds": 2113.635795744,
+      "measured_slots": 53800
+    },
+    {
+      "method": "QECO",
+      "parameters": 23072,
+      "throughput_slots_per_s": 51.63745337302722,
+      "p95_ms": 47.82908945,
+      "power_w": 1.762,
+      "backend": "rknn_float16_npu_cpu_controller",
+      "source_run": "method3_full_run1",
+      "source_csv_sha256": "db56b441f870da44a962cfd32c780b936950832f7c7207456da86e58e5fce013",
+      "controller_seconds": 1041.87942057,
+      "measured_slots": 53800
+    }
+  ]
+}

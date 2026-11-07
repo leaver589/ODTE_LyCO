@@ -1,0 +1,417 @@
+simulation:
+  slots: 54000
+  sensors: 8
+  seeds: 20
+  slot_seconds: 0.1
+  monitor_window: 6
+  slow_layer_period_slots: 60
+  task_size_sigma: 0.2
+resources:
+  sensor_cpu_min_hz: 200000000
+  sensor_cpu_max_hz: 1000000000
+  edge_cpu_hz: 2500000000
+  cloud_cpu_hz: 6000000000
+  tx_power_min_w: 0.01
+  tx_power_max_w: 0.25
+  se_bandwidth_hz: 400000
+  se_snr_at_max_power: 15.0
+  ec_rate_bits_per_slot: 500000
+energy:
+  sampling_j_per_slot: 0.002
+  budget_j_per_slot: 0.0032
+  cpu_coefficient: 2.0e-29
+controller:
+  v_delay: 0.4
+  queue_weight: 1.0
+  energy_weight: 0.055
+  fusion_energy_weight_multiplier: 0.2
+  trust_weight: 0.7
+  trust_barrier_weight: 1.0
+  resource_cost_weight: 0.02
+  fixed_weight_profiles: {}
+  performance_bottleneck_temperature: 0.03
+  cpu_search_points: 9
+  power_search_points: 9
+  odte_epsilon: 1.0e-06
+  adaptive_mode_enabled: true
+  criticality_deadline_weight: 0.4
+  criticality_queue_weight: 0.2
+  criticality_network_weight: 0.15
+  criticality_trust_weight: 0.25
+  criticality_queue_reference_slots: 1.5
+  criticality_trust_reference: 2.0
+  criticality_energy_relief: 0.95
+  criticality_delay_boost: 1.15
+  criticality_resource_relief: 0.6
+  criticality_trust_boost: 0.95
+  criticality_high_threshold: 0.6
+  arrival_ewma_alpha: 0.15
+  arrival_baseline_ewma_alpha: 0.02
+  queue_slope_ewma_alpha: 0.25
+  criticality_arrival_activation_excess: 0.28
+  criticality_arrival_excess_reference: 0.9
+  criticality_queue_slope_reference_slots: 1.0
+  criticality_arrival_weight: 0.55
+  criticality_queue_slope_weight: 0.45
+  criticality_event_floor: 0.75
+  dynamic_weights_enabled: true
+  dynamic_queue_reference_slots_per_sensor: 1.5
+  dynamic_pressure_ewma_alpha: 0.2
+  dynamic_pressure_max_step: 0.1
+  dynamic_congestion_enter: 0.3
+  dynamic_congestion_exit: 0.2
+  dynamic_congestion_min_hold_slots: 5
+  dynamic_queue_gain: 3.0
+  dynamic_queue_max_multiplier: 3.0
+  dynamic_delay_gain: 0.5
+  dynamic_delay_max_multiplier: 2.0
+  dynamic_energy_relief: 0.0
+  dynamic_energy_min_multiplier: 0.25
+  dynamic_local_gating_enabled: true
+  dynamic_local_queue_reference_slots: 1.5
+  dynamic_energy_debt_reference_budget_slots: 300.0
+  dynamic_energy_debt_gate_floor: 0.55
+  dynamic_queue_deadline_threshold: 0.55
+  dynamic_path_queue_reference_slots: 18.0
+  dynamic_path_capacity_floor: 0.55
+  dynamic_energy_recovery_gain: 0.3
+  dynamic_energy_recovery_max_multiplier: 1.6
+  dynamic_energy_recovery_deadline_threshold: 0.6
+placement:
+  initial: edge
+  min_residence_frames: 4
+  switch_margin: 0.025
+  migration_slots: 20
+  migration_penalty: 0.06
+  score_ema_alpha: 0.55
+  availability_debt_trigger: 0.5
+  queue_migration_trigger_slots: 2.0
+  max_migrations_per_frame: 1
+  mechanical_period_frames: 50
+  migration_evaluation_horizon_slots: 500
+  max_joint_odte_sacrifice: 0.05
+  dt_state_bits:
+    status: 8000000
+    diagnostic: 16000000
+    regional: 32000000
+  ineffective_migration_horizon_frames: 6
+  joint_trust_debt_reference: 2.0
+  joint_trust_gain_boost: 0.8
+  joint_queue_weight: 0.08
+  joint_queue_reference_slots: 5.0
+  joint_energy_debt_reference_j: 0.02
+  joint_energy_queue_coupling: 0.6
+service_classes:
+  status:
+    arrival_rate: 0.1
+    arrival_scope: per_sensor
+    input_bits: 60000
+    cycles_per_bit: 500.0
+    output_ratio: 0.1
+    deadline_slots: 12
+    odte_target: 0.85
+    dag:
+      nodes:
+      - node_id: station_telemetry_update
+        compute_ratio: 1.0
+      edges: []
+      source_node: station_telemetry_update
+      sink_node: station_telemetry_update
+  diagnostic:
+    arrival_rate: 0.0017
+    arrival_scope: per_sensor
+    input_bits: 180000
+    cycles_per_bit: 1500.0
+    output_ratio: 0.08
+    deadline_slots: 24
+    odte_target: 0.82
+    dag:
+      nodes:
+      - node_id: waveform_preprocessing
+        compute_ratio: 0.3
+      - node_id: phase_detection
+        compute_ratio: 0.4
+      - node_id: uncertainty_qc
+        compute_ratio: 0.3
+      edges:
+      - source: waveform_preprocessing
+        target: phase_detection
+        data_ratio: 0.2
+      - source: phase_detection
+        target: uncertainty_qc
+        data_ratio: 0.08
+      source_node: waveform_preprocessing
+      sink_node: uncertainty_qc
+  regional:
+    arrival_rate: 0.0017
+    arrival_scope: global
+    input_bits: 180000
+    cycles_per_bit: 7000.0
+    output_ratio: 0.03
+    deadline_slots: 24
+    odte_target: 0.88
+    dag:
+      nodes:
+      - node_id: multistation_association
+        compute_ratio: 0.2
+      - node_id: source_location
+        compute_ratio: 0.25
+      - node_id: fracture_tracking
+        compute_ratio: 0.25
+      - node_id: fault_risk_fusion
+        compute_ratio: 0.3
+      edges:
+      - source: multistation_association
+        target: source_location
+        data_ratio: 0.18
+      - source: multistation_association
+        target: fracture_tracking
+        data_ratio: 0.18
+      - source: source_location
+        target: fault_risk_fusion
+        data_ratio: 0.06
+      - source: fracture_tracking
+        target: fault_risk_fusion
+        data_ratio: 0.06
+      source_node: multistation_association
+      sink_node: fault_risk_fusion
+scenarios:
+  hf_new06_velocity_model_drift_3d_imaging_tuned:
+    arrival_multiplier: 1.0
+    se_loss: 0.03
+    ec_loss: 0.03
+    edge_gateway_availability: 0.999
+    edge_compute_availability: 0.995
+    cloud_availability: 0.999
+    ec_capacity_multiplier: 0.82
+    edge_capacity_multiplier: 0.7
+    cloud_capacity_multiplier: 1.25
+    sensor_energy_budget_multiplier: 0.93
+    initial_twin_location: edge
+    evaluation_event_start: 0.15
+    evaluation_event_end: 0.75
+    burst_windows:
+    - start: 0.2
+      end: 0.75
+      service_class: status
+      multiplier: 2.5
+      workload_multiplier: 3.2
+    - start: 0.2
+      end: 0.35
+      service_class: diagnostic
+      multiplier: 5.0
+      workload_multiplier: 1.9
+    - start: 0.25
+      end: 0.4
+      service_class: regional
+      multiplier: 4.0
+      workload_multiplier: 2.5
+    - start: 0.4
+      end: 0.58
+      service_class: diagnostic
+      multiplier: 6.0
+      workload_multiplier: 2.2
+    - start: 0.4
+      end: 0.58
+      service_class: regional
+      multiplier: 5.0
+      workload_multiplier: 3.2
+    - start: 0.58
+      end: 0.75
+      service_class: regional
+      multiplier: 3.0
+      workload_multiplier: 1.9
+    se_outage_windows: []
+    ec_outage_windows: []
+    edge_gateway_outage_windows: []
+    edge_compute_outage_windows: []
+    cloud_outage_windows: []
+    sensor_groups: []
+    resource_windows:
+    - start: 0.25
+      end: 0.38
+      edge_capacity_multiplier: 0.55
+      cloud_capacity_multiplier: 1.35
+    - start: 0.38
+      end: 0.58
+      edge_capacity_multiplier: 0.42
+      edge_compute_availability: 0.32
+      cloud_capacity_multiplier: 1.5
+    - start: 0.58
+      end: 0.75
+      edge_capacity_multiplier: 0.85
+      cloud_capacity_multiplier: 0.9
+    initial_twin_locations:
+      status: edge
+      diagnostic: edge
+      regional: edge
+  hf_final02_parent_child_frac_hit_casing:
+    arrival_multiplier: 1.02
+    se_loss: 0.03
+    ec_loss: 0.03
+    edge_gateway_availability: 0.999
+    edge_compute_availability: 0.995
+    cloud_availability: 0.999
+    ec_capacity_multiplier: 0.9
+    edge_capacity_multiplier: 0.88
+    cloud_capacity_multiplier: 1.15
+    sensor_energy_budget_multiplier: 0.93
+    initial_twin_location: edge
+    evaluation_event_start: 0.18
+    evaluation_event_end: 0.68
+    burst_windows:
+    - start: 0.2
+      end: 0.68
+      service_class: status
+      multiplier: 2.5
+      workload_multiplier: 3.1
+    - start: 0.2
+      end: 0.34
+      service_class: diagnostic
+      multiplier: 7.5
+      workload_multiplier: 2.3
+    - start: 0.2
+      end: 0.34
+      service_class: regional
+      multiplier: 3.8
+      workload_multiplier: 1.9
+    - start: 0.34
+      end: 0.55
+      service_class: diagnostic
+      multiplier: 6.5
+      workload_multiplier: 2.1
+    - start: 0.34
+      end: 0.55
+      service_class: regional
+      multiplier: 4.8
+      workload_multiplier: 2.8
+    - start: 0.55
+      end: 0.68
+      service_class: regional
+      multiplier: 3.8
+      workload_multiplier: 1.9
+    se_outage_windows: []
+    ec_outage_windows: []
+    edge_gateway_outage_windows: []
+    edge_compute_outage_windows: []
+    cloud_outage_windows: []
+    sensor_groups: []
+    resource_windows:
+    - start: 0.2
+      end: 0.34
+      ec_capacity_multiplier: 0.8
+      edge_capacity_multiplier: 0.8
+    - start: 0.34
+      end: 0.39
+      edge_capacity_multiplier: 0.48
+    - start: 0.39
+      end: 0.55
+      edge_compute_availability: 0.22
+      edge_capacity_multiplier: 0.22
+      cloud_capacity_multiplier: 1.55
+    - start: 0.55
+      end: 0.68
+      edge_compute_availability: 0.995
+      edge_capacity_multiplier: 0.85
+      cloud_capacity_multiplier: 0.9
+    initial_twin_locations:
+      status: edge
+      diagnostic: edge
+      regional: edge
+  hf_multiwell_multistage_zipper_switching:
+    arrival_multiplier: 1.0
+    se_loss: 0.035
+    ec_loss: 0.035
+    edge_gateway_availability: 0.998
+    edge_compute_availability: 0.997
+    cloud_availability: 0.999
+    ec_capacity_multiplier: 1.0
+    edge_capacity_multiplier: 0.66
+    cloud_capacity_multiplier: 0.78
+    sensor_energy_budget_multiplier: 0.88
+    initial_twin_location: edge
+    evaluation_event_start: 0.12
+    evaluation_event_end: 0.68
+    burst_windows:
+    - start: 0.12
+      end: 0.68
+      service_class: status
+      multiplier: 1.15
+      workload_multiplier: 1.35
+    - start: 0.12
+      end: 0.26
+      service_class: diagnostic
+      multiplier: 9.2
+      workload_multiplier: 2.75
+    - start: 0.12
+      end: 0.26
+      service_class: regional
+      multiplier: 1.8
+      workload_multiplier: 1.35
+    - start: 0.26
+      end: 0.4
+      service_class: diagnostic
+      multiplier: 14.8
+      workload_multiplier: 4.25
+    - start: 0.26
+      end: 0.4
+      service_class: regional
+      multiplier: 5.4
+      workload_multiplier: 3.6
+    - start: 0.4
+      end: 0.54
+      service_class: diagnostic
+      multiplier: 20.0
+      workload_multiplier: 4.45
+    - start: 0.4
+      end: 0.54
+      service_class: regional
+      multiplier: 8.1
+      workload_multiplier: 4.95
+    - start: 0.54
+      end: 0.68
+      service_class: diagnostic
+      multiplier: 11.0
+      workload_multiplier: 3.5
+    - start: 0.54
+      end: 0.68
+      service_class: regional
+      multiplier: 4.5
+      workload_multiplier: 2.7
+    se_outage_windows: []
+    ec_outage_windows: []
+    edge_gateway_outage_windows: []
+    edge_compute_outage_windows: []
+    cloud_outage_windows: []
+    sensor_groups:
+    - sensor_fraction: 0.25
+      se_loss: 0.14
+      sensor_energy_budget_multiplier: 0.92
+    resource_windows:
+    - start: 0.12
+      end: 0.26
+      ec_capacity_multiplier: 0.75
+      edge_capacity_multiplier: 0.9
+      cloud_capacity_multiplier: 0.9
+    - start: 0.26
+      end: 0.4
+      ec_capacity_multiplier: 0.65
+      edge_capacity_multiplier: 0.42
+      cloud_capacity_multiplier: 1.5
+    - start: 0.4
+      end: 0.54
+      ec_loss: 0.1
+      ec_capacity_multiplier: 0.42
+      edge_compute_availability: 0.2
+      edge_capacity_multiplier: 0.3
+      cloud_capacity_multiplier: 1.9
+    - start: 0.54
+      end: 0.68
+      ec_capacity_multiplier: 0.3
+      edge_compute_availability: 0.999
+      edge_capacity_multiplier: 0.95
+      cloud_capacity_multiplier: 0.85
+    initial_twin_locations:
+      status: edge
+      diagnostic: edge
+      regional: cloud
