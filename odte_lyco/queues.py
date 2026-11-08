@@ -3,18 +3,21 @@
 from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Iterable
+from typing import Deque
 from .models import MigrationTransfer, Task
 
 
 @dataclass
 class VirtualQueue:
     value: float = 0.0
-    maximum: float = 0.0
 
     def update(self, arrival: float, service: float) -> None:
+        # equation (23): callers supply actual energy E_s and budget B_s.
+        # equation (24): ODTE callers supply component log loss and its loss budget.
+        # equation (25): telescoping yields mean energy <= B_s + Y_s(T)/T.
+        # equation (26): telescoping yields mean loss <= b_ck + Z_ck(N)/N.
+        # The long-term bounds follow when the corresponding queue is mean-rate stable.
         self.value = max(0.0, self.value + float(arrival) - float(service))
-        self.maximum = max(self.maximum, self.value)
 
 
 @dataclass
@@ -36,19 +39,4 @@ class TaskQueues:
         self.source = [deque() for _ in range(self.sensor_count)]
         self.local_results = [deque() for _ in range(self.sensor_count)]
 
-    def all_queues(self) -> Iterable[Deque[Task]]:
-        yield from self.source
-        yield from self.local_results
-        yield self.edge_compute
-        yield self.edge_to_cloud
-        yield self.cloud_compute
-        yield self.cloud_to_edge
-        yield self.pending_at_edge
-        yield self.pending_at_cloud
-        yield self.dependency_wait
 
-    def total_tasks(self) -> int:
-        return sum((len(queue) for queue in self.all_queues()))
-
-    def max_queue_length(self) -> int:
-        return max((len(queue) for queue in self.all_queues()), default=0)

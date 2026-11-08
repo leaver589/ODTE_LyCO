@@ -3,7 +3,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from math import exp, log
-from typing import Iterable
 import numpy as np
 from .config import ServiceClassConfig
 from .models import Task
@@ -53,6 +52,7 @@ class _CohortRecord:
         delay = self.commit_slot - self.arrival_slot + 1
         if delay <= self.deadline_slots:
             return 1.0
+        # equation (17): freshness is one through the deadline and decays for late submissions.
         return exp(-(delay - self.deadline_slots) / max(1, self.deadline_slots))
 
     @property
@@ -67,7 +67,6 @@ class ODTEMonitor:
     availability: dict[str, _AvailabilityCounter] = field(init=False)
     cohorts: dict[int, _CohortRecord] = field(init=False, default_factory=dict)
     trust_queues: dict[str, dict[str, VirtualQueue]] = field(init=False)
-    history: list[ODTESnapshot] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.availability = {name: _AvailabilityCounter() for name in self.services}
@@ -97,6 +96,7 @@ class ODTEMonitor:
             record.commit_slot = int(slot)
 
     def component_target(self, service_class: str, component: str) -> float:
+        # equation (22): equal component targets give b_ck = -log(theta_c)/3.
         return self.services[service_class].odte_target ** (1.0 / 3.0)
 
     def component_debts(self, service_class: str) -> dict[str, float]:
@@ -111,12 +111,6 @@ class ODTEMonitor:
             return queues[component].value
         return sum((queue.value for queue in queues.values()))
 
-    def all_trust_queues(self) -> Iterable[VirtualQueue]:
-        for queues in self.trust_queues.values():
-            yield from queues.values()
-
-    def pending_cohort_size(self) -> int:
-        return len(self.cohorts)
 
     def finalize_frame(self, current_slot: int) -> list[ODTESnapshot]:
         matured_by_class: dict[str, list[_CohortRecord]] = {
@@ -139,12 +133,14 @@ class ODTEMonitor:
                 timeliness = 1.0
                 reliability = 1.0
             else:
+                # equation (18): mean freshness among submitted requests in this matured cohort.
                 timeliness = (
                     sum((item.freshness() for item in observed_commits))
                     / len(observed_commits)
                     if observed_commits
                     else 0.0
                 )
+                # equation (19): all matured requests remain in the reliability denominator.
                 reliability = reliable_commits / arrivals
             availability_counter = self.availability[name]
             availability = (
@@ -157,6 +153,7 @@ class ODTEMonitor:
                 "reliability": float(np.clip(reliability, 0.0, 1.0)),
                 "availability": float(np.clip(availability, 0.0, 1.0)),
             }
+            # equation (21): measured component log losses.
             losses = {
                 component: -log(max(self.epsilon, value))
                 for component, value in values.items()
@@ -166,10 +163,12 @@ class ODTEMonitor:
                 for component in COMPONENTS
             }
             for component in COMPONENTS:
+                # equation (24): component loss excess is settled once per six-slot window.
                 self.trust_queues[name][component].update(
                     arrival=losses[component],
                     service=-log(max(self.epsilon, targets[component])),
                 )
+            # equation (20): ODTE = timeliness * reliability * availability.
             odte = float(np.clip(np.prod(tuple(values.values())), 0.0, 1.0))
             snapshot = ODTESnapshot(
                 service_class=name,
@@ -190,7 +189,6 @@ class ODTEMonitor:
                 availability_loss=losses["availability"],
             )
             snapshots.append(snapshot)
-            self.history.append(snapshot)
             self.availability[name] = _AvailabilityCounter()
         for task_id in matured_ids:
             del self.cohorts[task_id]

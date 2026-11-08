@@ -44,15 +44,12 @@ controller:
   criticality_delay_boost: 1.15
   criticality_resource_relief: 0.6
   criticality_trust_boost: 0.95
-  criticality_high_threshold: 0.6
   arrival_ewma_alpha: 0.15
   arrival_baseline_ewma_alpha: 0.02
   queue_slope_ewma_alpha: 0.25
   criticality_arrival_activation_excess: 0.28
   criticality_arrival_excess_reference: 0.9
   criticality_queue_slope_reference_slots: 1.0
-  criticality_arrival_weight: 0.55
-  criticality_queue_slope_weight: 0.45
   criticality_event_floor: 0.75
   dynamic_weights_enabled: true
   dynamic_queue_reference_slots_per_sensor: 1.5
@@ -87,14 +84,12 @@ placement:
   availability_debt_trigger: 0.5
   queue_migration_trigger_slots: 2.0
   max_migrations_per_frame: 1
-  mechanical_period_frames: 50
   migration_evaluation_horizon_slots: 500
   max_joint_odte_sacrifice: 0.05
   dt_state_bits:
     status: 8000000
     diagnostic: 16000000
     regional: 32000000
-  ineffective_migration_horizon_frames: 6
   joint_trust_debt_reference: 2.0
   joint_trust_gain_boost: 0.8
   joint_queue_weight: 0.08

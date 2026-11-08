@@ -6,6 +6,7 @@ from math import exp, log, log1p, log2, sqrt
 from typing import Callable, Mapping, Sequence
 import numpy as np
 from heapq import heappop, heappush
+from functools import cached_property
 from .config import ExperimentConfig
 from .models import NetworkState, Placement, Route, SourceAction, StrategySpec, Task
 from .odte import COMPONENTS, ODTEMonitor
@@ -35,28 +36,18 @@ class _Prediction:
     availability: float
     energy: float
 
-    @property
+    @cached_property
     def component_losses(self) -> dict[str, float]:
+        # equation (21): predicted component log losses with epsilon = 1e-6.
         return {
             "timeliness": -log(max(1e-06, self.timeliness)),
             "reliability": -log(max(1e-06, self.reliability)),
             "availability": -log(max(1e-06, self.availability)),
         }
 
-    @property
-    def trust_loss(self) -> float:
-        return sum(
-            (
-                -log(max(1e-06, self.timeliness)),
-                -log(max(1e-06, self.reliability)),
-                -log(max(1e-06, self.availability)),
-            )
-        )
-
 
 @dataclass(frozen=True)
 class _ControlProfile:
-    criticality: float
     v_delay: float
     queue_weight: float
     energy_weight: float
@@ -94,6 +85,7 @@ class LycoController:
         bandwidth = float(self.resources["se_bandwidth_hz"])
         pmax = float(self.resources["tx_power_max_w"])
         snr = float(self.resources["se_snr_at_max_power"])
+        # equation (6): physical wireless transmission volume per slot.
         return bandwidth * self.slot_seconds * log2(1.0 + snr * power_w / pmax)
 
     def se_rate_bits(self, power_w: float, state: NetworkState) -> float:
@@ -116,6 +108,7 @@ class LycoController:
             return 0.0
         pmax = float(self.resources["tx_power_max_w"])
         power_ratio = min(1.0, max(0.0, power_w / pmax))
+        # equation (7): power-dependent link success probability.
         quality = 0.55 + 0.45 * sqrt(power_ratio)
         base_probability = (
             state.sensor_se_success_probability
@@ -124,15 +117,9 @@ class LycoController:
         )
         return min(1.0, base_probability * quality)
 
-    def _backhaul_rate_bits(self, state: NetworkState) -> float:
-        if not state.ec_available:
-            return 0.0
-        return (
-            float(self.resources["ec_rate_bits_per_slot"])
-            * state.ec_capacity_multiplier
-        )
 
     def _expected_se_capacity(self, state: NetworkState) -> float:
+        # equation (11): positive conversion scale for global or sensor-specific q_SE.
         pmax = float(self.resources["tx_power_max_w"])
         probability = max(
             0.05,
@@ -145,6 +132,7 @@ class LycoController:
         return max(1.0, self._physical_se_rate_bits(pmax) * probability)
 
     def _expected_ec_capacity(self, state: NetworkState) -> float:
+        # equation (12): positive backhaul conversion scale; actual failures remain explicit.
         probability = max(0.05, state.ec_success_probability)
         return max(
             1.0,
@@ -154,6 +142,7 @@ class LycoController:
         )
 
     def _edge_capacity(self, state: NetworkState) -> float:
+        # equation (13): positive edge CPU conversion scale.
         return max(
             1.0,
             float(self.resources["edge_cpu_hz"])
@@ -162,6 +151,7 @@ class LycoController:
         )
 
     def _cloud_capacity(self, state: NetworkState) -> float:
+        # equation (13): positive cloud CPU conversion scale.
         return max(
             1.0,
             float(self.resources["cloud_cpu_hz"])
@@ -170,6 +160,7 @@ class LycoController:
         )
 
     def _source_task_workload(self, task: Task, state: NetworkState) -> float:
+        # equation (14): remaining CPU/upload service slots under the locked route.
         local = task.remaining_cycles / max(
             1.0, float(self.resources["sensor_cpu_max_hz"]) * self.slot_seconds
         )
@@ -318,6 +309,7 @@ class LycoController:
             float(self.ctrl["criticality_network_weight"]),
             float(self.ctrl["criticality_trust_weight"]),
         )
+        # equation (48): weighted deadline, source queue, path and ODTE pressures.
         weighted_pressure = (
             weights[0] * deadline_pressure
             + weights[1] * queue_pressure
@@ -327,17 +319,8 @@ class LycoController:
         base_criticality = weighted_pressure / max(1e-12, sum(weights))
         arrival_pressure = min(1.0, max(0.0, context.arrival_pressure))
         queue_growth_pressure = min(1.0, max(0.0, context.queue_growth_pressure))
-        event_weights = (
-            float(self.ctrl["criticality_arrival_weight"]),
-            float(self.ctrl["criticality_queue_slope_weight"]),
-        )
-        blended_event_pressure = (
-            event_weights[0] * arrival_pressure
-            + event_weights[1] * queue_growth_pressure
-        ) / max(1e-12, sum(event_weights))
-        event_pressure = max(
-            arrival_pressure, queue_growth_pressure, blended_event_pressure
-        )
+        event_pressure = max(arrival_pressure, queue_growth_pressure)
+        # equation (49): immediate arrival pressure and prior-slot queue-slope pressure.
         event_guard = float(self.ctrl["criticality_event_floor"]) * event_pressure
         return float(max(0.0, min(1.0, max(base_criticality, event_guard))))
 
@@ -367,6 +350,7 @@ class LycoController:
         local_gating_enabled = bool(
             dynamic_enabled and self.ctrl["dynamic_local_gating_enabled"]
         )
+        # equation (53): bounded dynamic delay multiplier.
         delay_multiplier = (
             1.0
             + float(self.ctrl["criticality_delay_boost"]) * criticality
@@ -383,6 +367,7 @@ class LycoController:
         queue_multiplier = min(
             float(self.ctrl["dynamic_queue_max_multiplier"]), queue_multiplier
         )
+        # equation (56): criticality relief, deficit recovery and fusion multiplier.
         energy_multiplier = max(
             0.0, 1.0 - float(self.ctrl["criticality_energy_relief"]) * criticality
         )
@@ -428,16 +413,17 @@ class LycoController:
             else 1.0
         )
         return _ControlProfile(
-            criticality=criticality,
             v_delay=self._base_weight("v_delay") * delay_multiplier,
             queue_weight=self._base_weight("queue_weight") * queue_multiplier,
             energy_weight=self._base_weight("energy_weight")
             * energy_multiplier
             * fusion_energy_multiplier,
+            # equation (54): instantaneous-resource weight.
             resource_cost_weight=self._base_weight("resource_cost_weight")
             * max(
                 0.0, 1.0 - float(self.ctrl["criticality_resource_relief"]) * criticality
             ),
+            # equation (55): ODTE deficit weight.
             trust_weight=self._base_weight("trust_weight")
             * (1.0 + float(self.ctrl["criticality_trust_boost"]) * criticality),
         )
@@ -504,6 +490,7 @@ class LycoController:
         capacity_floor = min(
             1.0, max(0.0, float(self.ctrl["dynamic_path_capacity_floor"]))
         )
+        # equation (57): route gate evaluated at maximum power for every candidate on the route.
         available_capacity = (
             capacity_floor + (1.0 - capacity_floor) * reliability * backlog_gate
         )
@@ -547,6 +534,7 @@ class LycoController:
             )
             debt_gate = max(debt_gate, min(1.0, deadline_gate))
         path_gate = self._route_capacity_gate(task, route, context, workloads)
+        # equation (58): congestion, local backlog, energy and deadline gated queue weight.
         multiplier = (
             1.0
             + float(self.ctrl["dynamic_queue_gain"])
@@ -565,6 +553,8 @@ class LycoController:
         context: ControllerContext,
         power_w: float | None = None,
     ) -> tuple[float, float]:
+        # equation (9): multiply directed-hop success probabilities, counting backhaul return.
+        # equation (10): multiply required availability factors, with migration attenuation.
         state = context.state
         twin = context.placement.location(task.service_class)
         power = (
@@ -630,11 +620,11 @@ class LycoController:
         workloads: Mapping[str, float] | None = None,
     ) -> _Prediction:
         state = context.state
-        queues = context.queues
         age = task.age(state.slot)
         pmax = float(self.resources["tx_power_max_w"])
         ec_capacity = self._expected_ec_capacity(state)
         if route is Route.LOCAL:
+            # equation (27): local node latency, result upload and authoritative-DT forwarding.
             service = max(1.0, frequency_hz * self.slot_seconds)
             compute_slots = task.remaining_cycles / service
             result_slots = task.output_bits / self._expected_se_capacity(state)
@@ -648,6 +638,7 @@ class LycoController:
                 task, route, context, workloads
             )
             active_fraction = min(1.0, task.remaining_cycles / service)
+            # equation (33): candidate local CPU energy for at most one slot.
             action_energy = (
                 float(self.energy["cpu_coefficient"])
                 * frequency_hz**3
@@ -656,6 +647,7 @@ class LycoController:
             )
             path_power = pmax
         elif route is Route.EDGE:
+            # equation (28): edge upload, computation, forwarding and destination backlog.
             rate = max(1.0, self.se_rate_bits(power_w, state))
             communication_slots = task.remaining_bits / max(1.0, rate)
             if context.placement.location(task.service_class) is Placement.CLOUD:
@@ -665,9 +657,11 @@ class LycoController:
                 task, route, context, workloads
             )
             active_fraction = min(1.0, task.remaining_bits / rate)
+            # equation (34): candidate upload energy uses physical capacity.
             action_energy = power_w * self.slot_seconds * active_fraction
             path_power = power_w
         else:
+            # equation (29): cloud latency includes the full node input on the backhaul.
             rate = max(1.0, self.se_rate_bits(power_w, state))
             communication_slots = task.remaining_bits / max(1.0, rate)
             communication_slots += task.input_bits / ec_capacity
@@ -682,6 +676,7 @@ class LycoController:
             path_power = power_w
         predicted_delay = age + compute_slots + communication_slots + downstream
         deadline = max(1.0, float(task.deadline_slots))
+        # equation (30): exponential timeliness proxy after the deadline.
         timeliness = (
             1.0
             if predicted_delay <= deadline
@@ -690,12 +685,14 @@ class LycoController:
         path_reliability, path_availability = self._path_factors(
             task, route, context, power_w=path_power
         )
+        # equation (32): epsilon-clipped path availability.
         availability = path_availability
         deadline_factor = (
             1.0
             if predicted_delay <= deadline
             else exp(-4.0 * (predicted_delay - deadline) / deadline)
         )
+        # equation (31): path reliability with a fourfold deadline-overrun discount.
         reliability = max(1e-06, path_reliability * deadline_factor)
         return _Prediction(
             delay=predicted_delay,
@@ -720,74 +717,23 @@ class LycoController:
         ) * self.se_success_probability(power_w, context.state)
         return expected_bits / self._expected_se_capacity(context.state)
 
-    def _labeled_performance_components(
-        self,
-        task: Task,
-        prediction: _Prediction,
-        context: ControllerContext,
-        profile: _ControlProfile,
-        budget: float,
-        *,
-        delay_reference: float,
-        component_debts: Mapping[str, float] | None = None,
-    ) -> list[tuple[str, float, float]]:
+    def _performance_components(
+        self, task, prediction, context, profile, budget, *, delay_reference,
+        component_debts=None,
+    ) -> list[tuple[float, float]]:
         components = [
-            (
-                "delay",
-                max(0.0, profile.v_delay),
-                max(0.0, prediction.delay / max(1e-12, delay_reference)),
-            ),
-            (
-                "resource",
-                max(0.0, profile.resource_cost_weight * budget),
-                max(0.0, prediction.energy / max(1e-12, budget)),
-            ),
+            # equation (59): delay weight and deadline-normalized node latency.
+            (profile.v_delay, prediction.delay / max(1e-12, delay_reference)),
+            # equation (60): budget-scaled resource weight and normalized candidate energy.
+            (profile.resource_cost_weight * budget, prediction.energy / max(1e-12, budget)),
         ]
         if self.strategy.use_odte:
-            debts = (
-                {
-                    component: max(0.0, float(value))
-                    for component, value in component_debts.items()
-                }
-                if component_debts is not None
-                else context.monitor.component_debts(task.service_class)
-            )
+            debts = (component_debts if component_debts is not None
+                     else context.monitor.component_debts(task.service_class))
             losses = prediction.component_losses
-            components.extend(
-                (
-                    (
-                        component,
-                        max(0.0, profile.trust_weight * debts[component]),
-                        max(0.0, losses[component]),
-                    )
-                    for component in COMPONENTS
-                )
-            )
-        return [item for item in components if item[1] > 0.0]
-
-    def _performance_components(
-        self,
-        task: Task,
-        prediction: _Prediction,
-        context: ControllerContext,
-        profile: _ControlProfile,
-        budget: float,
-        *,
-        delay_reference: float,
-        component_debts: Mapping[str, float] | None = None,
-    ) -> list[tuple[float, float]]:
-        return [
-            (weight, loss)
-            for _, weight, loss in self._labeled_performance_components(
-                task,
-                prediction,
-                context,
-                profile,
-                budget,
-                delay_reference=delay_reference,
-                component_debts=component_debts,
-            )
-        ]
+            # equation (61): each component uses its own deficit and predicted log loss.
+            components.extend((profile.trust_weight * debts[k], losses[k]) for k in COMPONENTS)
+        return [(max(0.0, w), max(0.0, g)) for w, g in components if w > 0.0]
 
     def _aggregate_performance_penalty(
         self,
@@ -815,6 +761,7 @@ class LycoController:
         if mode == "additive":
             return sum((weight * loss for weight, loss in components))
         if mode == "bottleneck":
+            # equation (62): bounded losses and numerically stabilized weighted LogSumExp.
             active = [
                 (weight, 1.0 - exp(-min(700.0, max(0.0, loss))))
                 for weight, loss in components
@@ -846,88 +793,6 @@ class LycoController:
             barrier += max(0.0, loss - component_budget)
         return self._base_weight("trust_barrier_weight") * barrier
 
-    def _objective(
-        self,
-        task: Task,
-        route: Route,
-        frequency_hz: float,
-        power_w: float,
-        context: ControllerContext,
-        profile: _ControlProfile | None = None,
-        workloads: Mapping[str, float] | None = None,
-        component_debts: Mapping[str, float] | None = None,
-    ) -> tuple[float, _Prediction]:
-        workloads = (
-            workloads if workloads is not None else self.queue_workloads(context)
-        )
-        profile = profile or self._control_profile(
-            task, context, workloads, component_debts=component_debts
-        )
-        prediction = self._predict(
-            task, route, frequency_hz, power_w, context, workloads
-        )
-        objective = self._objective_from_prediction(
-            task,
-            route,
-            frequency_hz,
-            power_w,
-            prediction,
-            context,
-            profile,
-            workloads,
-            component_debts=component_debts,
-        )
-        return (objective, prediction)
-
-    def _objective_from_prediction(
-        self,
-        task: Task,
-        route: Route,
-        frequency_hz: float,
-        power_w: float,
-        prediction: _Prediction,
-        context: ControllerContext,
-        profile: _ControlProfile,
-        workloads: Mapping[str, float],
-        *,
-        component_debts: Mapping[str, float] | None = None,
-    ) -> float:
-        source_q = workloads[f"source_{task.sensor_id}"]
-        destination_q = self._route_destination_workload(
-            task, route, context, workloads
-        )
-        service_rate = self._service_rate_in_workload_units(
-            task, route, frequency_hz, power_w, context
-        )
-        budget = self._sensor_energy_budget(task.sensor_id, context)
-        objective = self._aggregate_performance_penalty(
-            task,
-            prediction,
-            context,
-            profile,
-            budget,
-            delay_reference=float(max(1, task.deadline_slots)),
-            component_debts=component_debts,
-        )
-        if self.strategy.use_lyapunov:
-            objective += (
-                self._effective_queue_weight(task, route, context, profile, workloads)
-                * (destination_q - source_q)
-                * service_rate
-            )
-            pressure = (
-                context.energy_queues[task.sensor_id].value / max(1e-12, budget)
-                if self.strategy.use_energy_feedback else 0.0
-            )
-            objective += (
-                profile.energy_weight
-                * pressure
-                * prediction.energy
-                / max(1e-12, budget)
-            )
-        objective += self._trust_barrier(task, prediction, context)
-        return objective
-
     def _source_action_evaluations(
         self,
         task: Task,
@@ -951,9 +816,15 @@ class LycoController:
         workloads = (
             workloads if workloads is not None else self.queue_workloads(context)
         )
+        if component_debts is None and self.strategy.use_odte:
+            component_debts = context.monitor.component_debts(task.service_class)
         profile = self._control_profile(
             task, context, workloads, component_debts=component_debts
         )
+        budget = self._sensor_energy_budget(task.sensor_id, context)
+        pressure = (context.energy_queues[task.sensor_id].value / max(1e-12, budget)
+                    if self.strategy.use_lyapunov and self.strategy.use_energy_feedback else 0.0)
+        source_q = workloads[f"source_{task.sensor_id}"]
         evaluations: list[tuple[SourceAction, _Prediction]] = []
         for route in routes:
             if route is None:
@@ -979,22 +850,30 @@ class LycoController:
                 )
             ):
                 continue
+            # Route-level terms are shared by all nine resource candidates.
+            queue_term = 0.0
+            if self.strategy.use_lyapunov:
+                destination_q = self._route_destination_workload(task, route, context, workloads)
+                queue_term = (self._effective_queue_weight(task, route, context, profile, workloads)
+                              * (destination_q - source_q))
             resource_pairs = (
                 ((float(frequency), 0.0) for frequency in self._frequencies)
                 if route is Route.LOCAL
                 else ((0.0, float(power)) for power in self._powers)
             )
             for frequency, power in resource_pairs:
-                objective, prediction = self._objective(
-                    task,
-                    route,
-                    frequency,
-                    power,
-                    context,
-                    profile,
-                    workloads,
+                prediction = self._predict(task, route, frequency, power, context, workloads)
+                # equation (35): performance + queue drift + energy deficit + excess-loss penalty.
+                objective = self._aggregate_performance_penalty(
+                    task, prediction, context, profile, budget,
+                    delay_reference=float(max(1, task.deadline_slots)),
                     component_debts=component_debts,
                 )
+                if self.strategy.use_lyapunov:
+                    service = self._service_rate_in_workload_units(task, route, frequency, power, context)
+                    objective += queue_term * service
+                    objective += profile.energy_weight * pressure * prediction.energy / max(1e-12, budget)
+                objective += self._trust_barrier(task, prediction, context)
                 evaluations.append(
                     (
                         SourceAction(
@@ -1002,12 +881,6 @@ class LycoController:
                             route=route,
                             cpu_frequency_hz=frequency,
                             transmit_power_w=power,
-                            predicted_delay_slots=prediction.delay,
-                            predicted_timeliness=prediction.timeliness,
-                            predicted_reliability=prediction.reliability,
-                            predicted_availability=prediction.availability,
-                            predicted_trust_loss=prediction.trust_loss,
-                            criticality=profile.criticality,
                             odte_weight=profile.trust_weight,
                             energy_weight=profile.energy_weight,
                             objective=objective,
@@ -1017,14 +890,6 @@ class LycoController:
                 )
         return evaluations
 
-    def _select_source_evaluation(
-        self,
-        task: Task,
-        context: ControllerContext,
-        evaluations: Sequence[tuple[SourceAction, _Prediction]],
-        workloads: Mapping[str, float] | None = None,
-    ) -> tuple[SourceAction, _Prediction]:
-        return min(evaluations, key=lambda item: item[0].objective)
 
     def choose_source_action(
         self,
@@ -1044,9 +909,7 @@ class LycoController:
         )
         if not evaluations:
             return None
-        action, _prediction = self._select_source_evaluation(
-            task, context, evaluations, workloads
-        )
+        action, _prediction = min(evaluations, key=lambda item: item[0].objective)
         return action
 
     def select_source_task(
@@ -1092,7 +955,7 @@ class LycoController:
         heap: list[tuple[float, int, int, Task]] = []
         for task in context.queues.source[sensor_id]:
             priority, deadline, task_id = priority_key(task)
-            heappush(heap, (-priority, deadline, task_id, task))
+            heappush(heap, (-priority, -deadline, task_id, task))
         return heap
 
     def restore_source_priority(
@@ -1103,7 +966,7 @@ class LycoController:
     ) -> None:
         priority_key = self._source_priority_key(context.state.slot, context)
         priority, deadline, task_id = priority_key(task)
-        heappush(priority_heap, (-priority, deadline, task_id, task))
+        heappush(priority_heap, (-priority, -deadline, task_id, task))
 
     def _source_priority_key(
         self, slot: int, context: ControllerContext
@@ -1150,16 +1013,6 @@ class LycoController:
             return False
         return task.route is not None or allow_local or allow_remote
 
-    def choose_source_actions(self, context: ControllerContext) -> list[SourceAction]:
-        actions: list[SourceAction] = []
-        for sensor_id in range(len(context.queues.source)):
-            task = self.select_source_task(sensor_id, context)
-            if task is None:
-                continue
-            action = self.choose_source_action(task, context)
-            if action is not None:
-                actions.append(action)
-        return actions
 
     def choose_result_power(self, task: Task, context: ControllerContext) -> float:
         best_power = float(self._powers[-1])
@@ -1216,6 +1069,7 @@ class LycoController:
         return best_power
 
     def task_priority(self, task: Task, slot: int, monitor: ODTEMonitor) -> float:
+        # equation (36): request urgency before and after its absolute deadline.
         remaining = task.deadline_slot - slot
         urgency = 1.0 / (max(0, remaining) + 1.0)
         if remaining < 0:
@@ -1225,6 +1079,7 @@ class LycoController:
         if self.strategy.use_odte:
             component_debts = monitor.component_debts(task.service_class)
             debt = sum(component_debts.values())
+        # equation (37): source priority; heap ties use the earliest deadline.
         return (
             4.0 * urgency + age_ratio + float(self.ctrl["trust_weight"]) * log1p(debt)
         )

@@ -1,4 +1,4 @@
-"""Fixed paper configuration; no legacy formats or validation layer."""
+"""Typed parameters, DAG templates and scenario definitions from config.yaml."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -30,14 +30,9 @@ class DAGTemplateConfig:
     def predecessors(self, node_id: str) -> tuple[str, ...]:
         return tuple((edge.source for edge in self.edges if edge.target == node_id))
 
-    def successors(self, node_id: str) -> tuple[str, ...]:
-        return tuple((edge.target for edge in self.edges if edge.source == node_id))
 
     def incoming_data_ratio(self, node_id: str) -> float:
         return sum((edge.data_ratio for edge in self.edges if edge.target == node_id))
-
-    def outgoing_data_ratio(self, node_id: str) -> float:
-        return sum((edge.data_ratio for edge in self.edges if edge.source == node_id))
 
 
 @dataclass(frozen=True)

@@ -21,10 +21,7 @@ class RunMetrics:
     delays: list = field(default_factory=list)
     snapshots: list = field(default_factory=list)
     event_snapshots: list = field(default_factory=list)
-    sensor_energy_totals: list = field(init=False)
 
-    def __post_init__(self):
-        self.sensor_energy_totals = [0.0] * self.sensors
 
     def record_admission(self):
         self.admitted += 1
@@ -35,15 +32,14 @@ class RunMetrics:
         self.timely_completed += int(delay <= task.deadline_slots)
         self.delays.append(delay)
 
-    def record_energy(self, value, *, sensor_id, slot):
+    def record_energy(self, value):
         self.total_energy += float(value)
-        self.sensor_energy_totals[sensor_id] += float(value)
 
-    def record_queue(self, total, maximum):
+    def record_queue(self, total):
         self.queue_sum += float(total)
         self.queue_samples += 1
 
-    def record_migration(self, event):
+    def record_migration(self):
         self.migrations += 1
 
     def add_snapshots(self, snapshots, *, slot):
@@ -70,6 +66,7 @@ class RunMetrics:
             "p05_min_component": float(np.percentile(minimum, 5)),
             "timely_completion_rate": self.timely_completed / self.admitted,
             "total_sensor_energy": self.total_energy,
+            # equation (63): effective budget is averaged over heterogeneous sensors.
             "energy_budget_ratio": self.total_energy
             / (self.sensors * self.slots)
             / self.energy_budget_per_slot,

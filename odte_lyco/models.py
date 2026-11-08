@@ -36,9 +36,6 @@ class Task:
     request_id: int | None = None
     dag_node_id: str = "task"
     predecessor_ids: tuple[str, ...] = ()
-    successor_ids: tuple[str, ...] = ()
-    dependency_input_bits: float = 0.0
-    dependency_output_bits: float = 0.0
     is_dag_sink: bool = True
     ready_slot: int | None = None
     route: Route | None = None
@@ -55,9 +52,6 @@ class Task:
     def cohort_id(self) -> int:
         return self.task_id if self.request_id is None else self.request_id
 
-    @property
-    def is_dag_root(self) -> bool:
-        return not self.predecessor_ids
 
     @property
     def deadline_slot(self) -> int:
@@ -88,10 +82,6 @@ class NetworkState:
     sensor_se_success_probability: float | None = None
     sensor_se_available: bool | None = None
 
-    @property
-    def edge_available(self) -> bool:
-        return self.edge_compute_available
-
 
 @dataclass(frozen=True)
 class SourceAction:
@@ -99,12 +89,6 @@ class SourceAction:
     route: Route
     cpu_frequency_hz: float = 0.0
     transmit_power_w: float = 0.0
-    predicted_delay_slots: float = 0.0
-    predicted_timeliness: float = 1.0
-    predicted_reliability: float = 1.0
-    predicted_availability: float = 1.0
-    predicted_trust_loss: float = 0.0
-    criticality: float = 0.0
     odte_weight: float = 0.0
     energy_weight: float = 0.0
     objective: float = 0.0
@@ -123,7 +107,6 @@ class MigrationEvent:
     sensor_energy_debt_per_sensor: float
     joint_utility_gain: float
     required_utility_gain: float
-    reverses_recent_migration: bool = False
 
 
 @dataclass
@@ -151,8 +134,6 @@ class StrategySpec:
 @dataclass(frozen=True)
 class LayerControlSpec:
     name: str
-    use_fast_feedback: bool
-    use_slow_placement: bool
     share_fast_state: bool
     task_decision_cadence: str
     placement_policy: str
@@ -161,38 +142,29 @@ class LayerControlSpec:
 LAYER_CONTROL_MODES: dict[str, LayerControlSpec] = {
     "all_fast": LayerControlSpec(
         "all_fast",
-        use_fast_feedback=True,
-        use_slow_placement=False,
         share_fast_state=False,
         task_decision_cadence="slot",
         placement_policy="fast_adaptive",
     ),
     "all_slow": LayerControlSpec(
         "all_slow",
-        use_fast_feedback=False,
-        use_slow_placement=True,
         share_fast_state=False,
         task_decision_cadence="window",
         placement_policy="slow_adaptive",
     ),
     "fixed_edge": LayerControlSpec(
         "fixed_edge",
-        use_fast_feedback=True,
-        use_slow_placement=False,
         share_fast_state=False,
         task_decision_cadence="slot",
         placement_policy="fixed_edge",
     ),
     "coordinated": LayerControlSpec(
         "coordinated",
-        use_fast_feedback=True,
-        use_slow_placement=True,
         share_fast_state=True,
         task_decision_cadence="slot",
         placement_policy="slow_coordinated",
     ),
 }
-LAYER_ABLATION_MODE_NAMES = tuple(LAYER_CONTROL_MODES)
 COORDINATED_LAYER_MODE_NAME = "coordinated"
 STRATEGIES = {
     "base": StrategySpec("base", True, True),

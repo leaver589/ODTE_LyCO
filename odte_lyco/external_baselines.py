@@ -58,7 +58,6 @@ class _AdaptedController(LycoController):
 
 
 class LyDROO3TierController(_AdaptedController):
-    default_decoder_mode = "OPN"
 
     def __init__(
         self,
@@ -66,14 +65,12 @@ class LyDROO3TierController(_AdaptedController):
         *,
         sensors: int,
         seed: int,
-        decoder_mode: str = default_decoder_mode,
         memory_size: int = 1024,
         delta: int = 32,
     ) -> None:
         LycoController.__init__(self, config, LYDROO_STRATEGY)
         self.sensors = int(sensors)
         self.seed = int(seed)
-        self.decoder_mode = str(decoder_mode)
         self._module = _network_lydroo()
         np.random.seed(self.seed)
         self._module.torch.manual_seed(self.seed)
@@ -220,13 +217,15 @@ class LyDROO3TierController(_AdaptedController):
             return
         nn_input = self._normalized_state(contexts, workloads_by_sensor)
         self._update_candidate_count(slot)
-        raw_candidates = self.memory.decode(nn_input, max(1, self.k), self.decoder_mode)
+        raw_candidates = self.memory.decode(nn_input, max(1, self.k))
         candidates = [
             np.asarray(candidate, dtype=int).reshape(self.sensors)
             for candidate in raw_candidates
         ]
         if not candidates:
             candidates = [np.zeros(self.sensors, dtype=int)]
+        # Each sensor has two domains; candidates reuse their identical resource evaluations.
+        domain_actions: dict[tuple[int, bool], SourceAction | None] = {}
         scored: list[tuple[float, np.ndarray, dict[int, SourceAction]]] = []
         for candidate in candidates:
             repaired = candidate.copy()
@@ -240,14 +239,14 @@ class LyDROO3TierController(_AdaptedController):
                     requested_offload = task.route is not Route.LOCAL
                 else:
                     requested_offload = bool(candidate[sensor_id])
-                action = self._domain_action(
-                    task,
-                    contexts[sensor_id],
-                    offload=requested_offload,
-                    allow_local=True,
-                    allow_remote=bool(remote_available[sensor_id]),
-                    workloads=workloads_by_sensor[sensor_id],
-                )
+                key = (sensor_id, requested_offload)
+                if key not in domain_actions:
+                    domain_actions[key] = self._domain_action(
+                        task, contexts[sensor_id], offload=requested_offload,
+                        allow_local=True, allow_remote=bool(remote_available[sensor_id]),
+                        workloads=workloads_by_sensor[sensor_id],
+                    )
+                action = domain_actions[key]
                 if action is None:
                     objective += 1000000000000.0
                     repaired[sensor_id] = int(requested_offload)
@@ -320,11 +319,10 @@ class QECOController(_AdaptedController):
     target_update_interval = 200
 
     def __init__(
-        self, config: ExperimentConfig, *, sensors: int, slots: int, seed: int = 0
+        self, config: ExperimentConfig, *, sensors: int, seed: int = 0
     ) -> None:
         super().__init__(config)
         self.sensors = int(sensors)
-        self.slots = int(slots)
         self.seed = int(seed)
         logging.getLogger("tensorflow").setLevel(logging.ERROR)
         self._module = _network_qeco()
@@ -343,7 +341,6 @@ class QECOController(_AdaptedController):
                 self.n_actions,
                 self.n_features,
                 self.n_lstm_state,
-                self.slots,
                 n_lstm_step=self.n_lstm_step,
                 N_L1=self.hidden_width,
                 N_lstm=self.n_lstm_hidden,
@@ -351,9 +348,6 @@ class QECOController(_AdaptedController):
                 memory_size=self.replay_memory_size,
                 batch_size=self.training_batch_size,
                 replace_target_iter=self.target_update_interval,
-                explicit_history=True,
-                record_q_values=False,
-                verbose=False,
             )
             self.agents.append(agent)
         self._history_slot = -1
@@ -422,8 +416,6 @@ class QECOController(_AdaptedController):
             )
 
     def finish_source_slot(self, context: ControllerContext) -> None:
-        if not True:
-            return
         slot = int(context.state.slot)
         if slot == self._training_slot:
             return
@@ -513,10 +505,8 @@ class QECOController(_AdaptedController):
             workloads=workloads,
         )
         if (
-            True
-            and task.route is None
+            task.route is None
             and (adapted is not None)
-            and True
             and (task.cohort_id not in self._feedback)
         ):
             feedback = _QECOFeedback(

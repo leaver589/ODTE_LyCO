@@ -26,8 +26,8 @@ def save(figure, path):
     plt.close(figure)
 
 
-def _draw_weight_axes(figure, axes, results, config, duration, *, legend=True):
-    scenario_clock = config.simulation["slots"] * config.slot_seconds / 60
+def _draw_weight_axes(axes, results, config, duration):
+    scenario_clock = results[0]["slots"] * config.slot_seconds / 60
     for index, (scene, axis) in enumerate(zip(SCENARIOS, axes)):
         runs = [r for r in results if r["scene"] == scene and r["method"] == "odte_lyco"]
         weights = np.asarray([r["weights"] for r in runs])
@@ -51,22 +51,6 @@ def _draw_weight_axes(figure, axes, results, config, duration, *, legend=True):
         axis.grid(alpha=.22, lw=.45)
         axis.tick_params(labelsize=6.8, length=2, pad=2)
     axes[0].set_ylabel("Normalized weight")
-    if legend:
-        handles = [Patch(fc="#f4d2d2", label="Event"), Patch(fc="#dceaf6", label="Recovery"),
-                   Patch(fc="#eef1f4", label="Post-event"),
-                   Line2D([], [], color="#d62728", lw=.85, label="ODTE weight"),
-                   Line2D([], [], color="#1f77b4", lw=.85, label="Energy weight"),
-                   Line2D([], [], color="#555555", lw=.65, ls="--", label="Baseline")]
-        figure.legend(handles=handles, loc="lower center", ncol=6, frameon=False,
-                      bbox_to_anchor=(.54, -.01), fontsize=6.1, columnspacing=.95)
-
-
-def weight_figure(results, config, path):
-    figure, axes = plt.subplots(1, 3, figsize=(7.16, 1.67), sharey=True)
-    figure.subplots_adjust(left=.075, right=.975, bottom=.32, top=.98, wspace=.16)
-    duration = max(r.get("weight_slots", r["slots"]) for r in results) * config.slot_seconds / 60
-    _draw_weight_axes(figure, axes, results, config, duration)
-    save(figure, path)
 
 
 def event_pairs(events):
@@ -197,7 +181,7 @@ def migration_figure(results, path):
             for mode in MODES for service in SERVICES], axis=0)
         intervals = list(state_runs(np.r_[times, horizon], link))
         draw_strip(strips[4], intervals, ("#eaf3fa", "#fff7e5", "#f7d9d9"),
-                   ("Normal", "Degraded", "Interrupted"), "Link")
+                   ("Normal", "Degraded", "Interrupted"), "Path")
         for a, b, state in intervals:
             if state == 2:
                 for axis in lanes:
@@ -210,9 +194,9 @@ def migration_figure(results, path):
                       label=("All-fast (F)", "All-slow (S)", "Base (B)")[i]) for i in range(3)]
     handles += [(Line2D([], [], color="#657078", marker="o", mfc="white", ls="none", ms=3),
                  Line2D([], [], color="#657078", marker="o", mfc="#657078", ls="none", ms=3)),
-                Patch(fc="#f7d9d9", ec="#d8a7a7", hatch="////", label="Link outage")]
+                Patch(fc="#f7d9d9", ec="#d8a7a7", hatch="////", label="Path outage")]
     figure.legend(handles=handles, loc="upper center", bbox_to_anchor=(.53, 1.01),
-                  labels=("All-fast (F)", "All-slow (S)", "Base (B)", "Start / switch", "Link outage"),
+                  labels=("All-fast (F)", "All-slow (S)", "Base (B)", "Start / switch", "Path outage"),
                   handler_map={tuple: HandlerTuple(ndivide=None)}, ncol=5, fontsize=7.2,
                   frameon=False, handlelength=1.4, columnspacing=1.1)
     figure.text(.5, .017, "Elapsed time (s)", ha="center")
@@ -246,15 +230,13 @@ def cdf_figure(results, path):
         save(figure, path)
 
 
-def _draw_energy_axes(figure, axes, results, *, legend=True, bottom=.34, top=.95,
-                      panel_labels=False):
+def _draw_energy_axes(axes, results):
     slots = results[0]["slots"]
     first, last = slots * .1 / 60, round(slots * 5 / 3) * .1 / 60
     maximum = 0.
     for index, (scene, axis) in enumerate(zip(SCENARIOS, axes)):
-        if panel_labels:
-            axis.text(.02, .96, f"({chr(100 + index)})", transform=axis.transAxes,
-                      va="top")
+        axis.text(.02, .96, f"({chr(100 + index)})", transform=axis.transAxes,
+                  va="top")
         axis.axvspan(first, last, color="#e8f0f7")
         axis.axvline(first, ls=":", color="#777777", lw=.65)
         for method, color, marker, style in zip(ENERGY_METHODS, ("#1f5b8f", "#d95f02"), ("o", "s"), ("-", "--")):
@@ -268,7 +250,7 @@ def _draw_energy_axes(figure, axes, results, *, legend=True, bottom=.34, top=.95
             maximum = max(maximum, float(np.max(mean + half)))
             axis.fill_between(times, mean - half, mean + half, color=color, alpha=.15, lw=0)
             axis.plot(times, mean, color=color, marker=marker, ms=2.0, mfc="white", mew=.5, lw=.85, ls=style,
-                      label="Full ODTE-LyCO" if method == "odte_lyco" else "Without Y feedback")
+                      label="Full ODTE-LyCO" if method == "odte_lyco" else "No-Y feedback")
         full = [r for r in results if r["scene"] == scene and r["method"] == "odte_lyco"]
         grid = np.linspace(0, last, 301)
         occupancy = np.mean([np.any([(grid >= a) & (grid < b) for a, b in r["episodes"]], axis=0)
@@ -281,19 +263,6 @@ def _draw_energy_axes(figure, axes, results, *, legend=True, bottom=.34, top=.95
     axes[0].set_ylim(0, maximum * 1.12)
     axes[0].set_ylabel("Mean debt (J/sensor)", y=.40)
 
-    if legend:
-        handles, labels = axes[0].get_legend_handles_labels()
-        figure.legend(handles + [Patch(fc="#b8b8b8")], labels + ["Later-event occupancy"],
-                      loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(.53, -.035),
-                      fontsize=6.5, handlelength=2, columnspacing=1.5)
-
-
-def energy_figure(results, path):
-    figure, axes = plt.subplots(1, 3, figsize=(7.16, 1.35), sharey=True)
-    figure.subplots_adjust(left=.085, right=.975, bottom=.34, top=.95, wspace=.17)
-    _draw_energy_axes(figure, axes, results)
-    save(figure, path)
-
 
 def combined_weight_energy_figure(results, config, path):
     figure = plt.figure(figsize=(7.16, 2.92))
@@ -304,8 +273,8 @@ def combined_weight_energy_figure(results, config, path):
     energy_axes.extend(figure.add_subplot(grid[1, index], sharey=energy_axes[0])
                        for index in range(1, 3))
     duration = max(r.get("weight_slots", r["slots"]) for r in results) * config.slot_seconds / 60
-    _draw_weight_axes(figure, weight_axes, results, config, duration, legend=False)
-    _draw_energy_axes(figure, energy_axes, results, legend=False, panel_labels=True)
+    _draw_weight_axes(weight_axes, results, config, duration)
+    _draw_energy_axes(energy_axes, results)
 
     weight_handles = [Patch(fc="#f4d2d2", label="Event"), Patch(fc="#dceaf6", label="Recovery"),
                       Patch(fc="#eef1f4", label="Post-event"),
@@ -331,8 +300,4 @@ def write_figures(results, config, output):
         migration_figure(main, folder / "migration_comparison.pdf")
         cdf_figure(main, folder / "event_odte_cdf_compact.pdf")
     if energy:
-        weight_figure(energy, config, folder / "weight_evolution.pdf")
         combined_weight_energy_figure(energy, config, folder / "weight_y_feedback_combined.pdf")
-        energy_figure(energy, folder / "y_feedback_three_debt.pdf")
-    elif main:
-        weight_figure(main, config, folder / "weight_evolution.pdf")

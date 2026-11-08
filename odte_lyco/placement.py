@@ -60,10 +60,8 @@ class PlacementManager:
     last_migration_frame: dict[str, int] = field(init=False)
     migration_until_slot: dict[str, int] = field(init=False)
     pending_events: dict[str, MigrationEvent] = field(init=False)
-    last_completed_events: dict[str, MigrationEvent] = field(init=False)
     score_ema: dict[str, dict[Placement, float]] = field(init=False)
     observation: _WindowObservation = field(default_factory=_WindowObservation)
-    migrations: int = 0
 
     def __post_init__(self) -> None:
         initial = self.initial_location or Placement(
@@ -78,7 +76,6 @@ class PlacementManager:
         }
         self.migration_until_slot = {name: -1 for name in self.config.service_classes}
         self.pending_events = {}
-        self.last_completed_events = {}
         self.score_ema = {
             name: {Placement.EDGE: 0.0, Placement.CLOUD: 0.0}
             for name in self.config.service_classes
@@ -99,7 +96,6 @@ class PlacementManager:
         self.migration_until_slot[service_class] = slot + int(
             self.config.placement["migration_slots"]
         )
-        self.last_completed_events[service_class] = event
         return event
 
     def observe(self, state: NetworkState) -> None:
@@ -119,12 +115,14 @@ class PlacementManager:
             )
         )
         if location is Placement.EDGE:
+            # equation (42): class-specific edge placement queue cost.
             downstream = (
                 workloads.get("edge_compute", 0.0)
                 + workloads.get("cloud_to_edge", 0.0)
                 + workloads.get("pending_at_edge", 0.0)
             )
         else:
+            # equation (43): class-specific cloud placement queue cost.
             downstream = (
                 workloads.get("edge_to_cloud", 0.0)
                 + workloads.get("cloud_compute", 0.0)
@@ -154,10 +152,14 @@ class PlacementManager:
         edge_compute_available = observation.mean(observation.edge_compute_sum)
         cloud_available = observation.mean(observation.cloud_sum)
         if location is Placement.EDGE:
+            # equation (38): edge reliability proxy.
             reliability = se_reliability
+            # equation (40): edge service-chain availability proxy.
             availability = se_available * gateway_available * edge_compute_available
         else:
+            # equation (39): cloud reliability proxy.
             reliability = se_reliability * ec_reliability
+            # equation (41): cloud service-chain availability proxy.
             availability = (
                 se_available * gateway_available * ec_available * cloud_available
             )
@@ -170,15 +172,6 @@ class PlacementManager:
             ),
         )
 
-    def _placement_odte(
-        self, service_class: str, location: Placement, load_slots: float
-    ) -> float:
-        return self._placement_estimate(
-            service_class,
-            location,
-            load_slots,
-            PlacementControlState(queue_workloads={}, mean_sensor_energy_debt=0.0),
-        ).odte
 
     def _joint_utility(
         self,
@@ -189,6 +182,7 @@ class PlacementManager:
         mean_sensor_energy_debt: float,
         use_lyapunov: bool,
     ) -> float:
+        # equation (44): deficit-weighted quality minus energy-coupled queue cost.
         placement = self.config.placement
         debt_reference = max(1e-12, float(placement["joint_trust_debt_reference"]))
         trust_pressure = min(1.0, max(0.0, trust_debt / debt_reference))
@@ -262,6 +256,7 @@ class PlacementManager:
         horizon = max(1, int(placement["migration_evaluation_horizon_slots"]))
         candidates: list[tuple[float, MigrationEvent]] = []
         for name, current in self.locations.items():
+            # Section III-B: classes between state transfers enter candidate evaluation.
             if name in self.pending_events:
                 continue
             snapshot = snapshot_by_class.get(name)
@@ -296,6 +291,7 @@ class PlacementManager:
             alternative_odte = self.score_ema[name][alternative] * (
                 1.0 - downtime_fraction
             )
+            # equation (46): migration-adjusted quality sacrifice constraint.
             if use_lyapunov and alternative_odte < current_odte - float(
                 placement["max_joint_odte_sacrifice"]
             ):
@@ -315,6 +311,7 @@ class PlacementManager:
                 use_lyapunov=use_lyapunov,
             )
             utility_gain = alternative_utility - current_utility
+            # equation (45): strict utility-gain threshold including migration overhead.
             required_gain = base_margin + migration_penalty * downtime_fraction
             if utility_gain <= required_gain:
                 continue
@@ -333,14 +330,9 @@ class PlacementManager:
                 sensor_energy_debt_per_sensor=control.mean_sensor_energy_debt,
                 joint_utility_gain=utility_gain,
                 required_utility_gain=required_gain,
-                reverses_recent_migration=name in self.last_completed_events
-                and self.last_completed_events[name].source is alternative
-                and (
-                    frame_index - self.last_completed_events[name].frame_index
-                    <= int(placement["ineffective_migration_horizon_frames"])
-                    * (self.config.monitor_window if force_evaluation else 1)
-                ),
+
             )
+            # equation (47): rank eligible migrations by surplus utility and class deficit.
             priority = (utility_gain - required_gain) * (1.0 + log1p(trust_debt))
             candidates.append((priority, event))
         events: list[MigrationEvent] = []
@@ -351,7 +343,6 @@ class PlacementManager:
                 break
             self.last_migration_frame[event.service_class] = frame_index
             self.pending_events[event.service_class] = event
-            self.migrations += 1
             events.append(event)
         self.observation = _WindowObservation()
         return events

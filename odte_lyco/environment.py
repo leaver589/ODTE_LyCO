@@ -79,7 +79,10 @@ class LycoEnvironment:
             if overrides.sensors is None
             else overrides.sensors
         )
-        self.timeline_sample_stride = max(1, (self.slots + 2399) // 2400)
+        self.timeline_pressure_bin_slots = round(30.0 / config.slot_seconds)
+        self._timeline_bin = -1
+        self._timeline_maxima = (-1.0, -1.0)
+        self._timeline_link_state = None
         self.queues = TaskQueues(self.sensors)
         self.monitor = ODTEMonitor(
             config.service_classes, epsilon=float(config.controller["odte_epsilon"])
@@ -139,7 +142,6 @@ class LycoEnvironment:
                 }
             ),
         )
-        self.fast_strategy = strategy
         self.controller = LycoController(config, strategy)
         self.metrics = RunMetrics(
             sensors=self.sensors,
@@ -223,6 +225,7 @@ class LycoEnvironment:
         return max(queue_pressure, capacity_pressure, availability_pressure)
 
     def _timeline_communication_state(self, state: NetworkState) -> str:
+        # Figure 3 records the gateway/backhaul/cloud service path.
         if not (
             state.ec_available
             and state.edge_gateway_available
@@ -237,8 +240,8 @@ class LycoEnvironment:
         return "degraded" if degraded else "normal"
 
     def _record_timeline_point(self, state):
-        if state.slot % self.timeline_sample_stride and state.slot != self.slots - 1:
-            return
+        # Preserve every 30-s maximum and every link-state transition in a sparse trace.
+        # This keeps one-slot outages and pressure peaks visible in Figure 3.
         condition = {
             "time_seconds": state.slot * self.config.slot_seconds,
             "task_pressure": max(
@@ -247,6 +250,22 @@ class LycoEnvironment:
             "edge_pressure": self._timeline_edge_pressure(state),
             "communication_state": self._timeline_communication_state(state),
         }
+        current_bin = state.slot // self.timeline_pressure_bin_slots
+        if current_bin != self._timeline_bin:
+            self._timeline_bin = current_bin
+            self._timeline_maxima = (-1.0, -1.0)
+        task_peak, edge_peak = self._timeline_maxima
+        preserve = (
+            condition["task_pressure"] > task_peak
+            or condition["edge_pressure"] > edge_peak
+            or condition["communication_state"] != self._timeline_link_state
+            or state.slot == self.slots - 1
+        )
+        self._timeline_maxima = (max(task_peak, condition["task_pressure"]),
+                                 max(edge_peak, condition["edge_pressure"]))
+        self._timeline_link_state = condition["communication_state"]
+        if not preserve:
+            return
         for name in self.config.service_classes:
             self._timeline_points[name].append(
                 {
@@ -450,10 +469,13 @@ class LycoEnvironment:
                     factor = float(
                         self.size_rng.lognormal(-0.5 * size_sigma**2, size_sigma)
                     )
+                    # equation (1): lognormal input size with the scenario workload multiplier.
                     input_bits = max(
                         1.0, service.input_bits * workload_multiplier * factor
                     )
+                    # equation (2): request computation in cycles.
                     cycles = input_bits * service.cycles_per_bit
+                    # equation (3): final request output in bits.
                     output_bits = max(256.0, input_bits * service.output_ratio)
                     self._create_dag_request(
                         sensor_id=sensor_id,
@@ -487,18 +509,12 @@ class LycoEnvironment:
             dependency_input_bits = input_bits * template.incoming_data_ratio(
                 node.node_id
             )
-            dependency_output_bits = input_bits * template.outgoing_data_ratio(
-                node.node_id
-            )
             node_cycles = cpu_cycles * node.compute_ratio
             task = Task(
                 task_id=self.next_task_id,
                 request_id=request_id,
                 dag_node_id=node.node_id,
                 predecessor_ids=template.predecessors(node.node_id),
-                successor_ids=template.successors(node.node_id),
-                dependency_input_bits=dependency_input_bits,
-                dependency_output_bits=dependency_output_bits,
                 is_dag_sink=is_sink,
                 ready_slot=slot if is_source else None,
                 sensor_id=sensor_id,
@@ -545,6 +561,7 @@ class LycoEnvironment:
         excess_reference = max(
             1e-12, float(self.config.controller["criticality_arrival_excess_reference"])
         )
+        # equation (50): clipped relative excess of the fast and slow arrival EMAs.
         self.arrival_pressure = min(
             1.0, max(0.0, (relative_excess - activation_excess) / excess_reference)
         )
@@ -590,6 +607,7 @@ class LycoEnvironment:
             )
             max_step = float(self.config.controller["dynamic_pressure_max_step"])
             delta = min(max_step, max(-max_step, smoothed - self.queue_pressure_ewma))
+            # equation (51): bounded congestion-state increment.
             self.queue_pressure_ewma = min(
                 1.0, max(0.0, self.queue_pressure_ewma + delta)
             )
@@ -611,6 +629,7 @@ class LycoEnvironment:
             pressure_delta = min(
                 max_step, max(-max_step, target_pressure - self.queue_pressure)
             )
+            # equation (52): bounded effective-pressure increment after hysteresis.
             self.queue_pressure = min(
                 1.0, max(0.0, self.queue_pressure + pressure_delta)
             )
@@ -813,6 +832,7 @@ class LycoEnvironment:
                 channel_code=direction_code,
                 entity_code=task.task_id,
             )
+            # equation (8): expected successful backhaul service is q_EC * eta_EC * R_EC.
             sent = attempted if success else 0.0
             remaining_capacity -= attempted
             if not success:
@@ -896,7 +916,7 @@ class LycoEnvironment:
             else self.queues.migration_cloud_to_edge
         )
         queue.append(transfer)
-        self.metrics.record_migration(event)
+        self.metrics.record_migration()
         self._record_timeline_event(event, phase="started", slot=slot)
 
     def _process_local_results(
@@ -905,6 +925,7 @@ class LycoEnvironment:
         context: ControllerContext,
         energy_this_slot: list[float],
     ) -> list[float]:
+        # equation (16): source and result uploads share one wireless slot per sensor.
         radio_remaining = [1.0 for _ in range(self.sensors)]
         for sensor_id, queue in enumerate(self.queues.local_results):
             sensor_context = self._sensor_context(context, sensor_id)
@@ -1061,6 +1082,7 @@ class LycoEnvironment:
             sensor_context = self._sensor_context(context, sensor_id)
             priority_heap = self._build_source_priority_heap(sensor_id, sensor_context)
             state = sensor_context.state
+            # equation (16): CPU activity has its own unit-slot budget.
             cpu_remaining = 1.0
             while queue and (
                 cpu_remaining > 1e-09 or radio_remaining[sensor_id] > 1e-09
@@ -1092,6 +1114,7 @@ class LycoEnvironment:
                         task.mark_started(state.slot, Route.LOCAL)
                         self._lock_request_route(task, Route.LOCAL)
                     frequency = action.cpu_frequency_hz
+                    # equation (4): actual local CPU capacity at the selected frequency.
                     service_cycles = frequency * self.config.slot_seconds
                     active_fraction = min(
                         cpu_remaining, task.remaining_cycles / max(1.0, service_cycles)
@@ -1099,6 +1122,7 @@ class LycoEnvironment:
                     cycles = min(
                         task.remaining_cycles, service_cycles * active_fraction
                     )
+                    # equation (15): executed local CPU energy, including the used slot fraction.
                     energy_this_slot[sensor_id] += (
                         float(self.config.energy["cpu_coefficient"])
                         * frequency**3
@@ -1274,6 +1298,7 @@ class LycoEnvironment:
             self._window_task_priorities.clear()
         state = self._network_state(slot)
         self.last_state = state
+        # Section III-B: observations accumulate through migration; evaluations pause.
         self.placement.observe(state)
         self._update_fast_placement(state)
         arrivals = self._generate_arrivals(slot)
@@ -1281,6 +1306,7 @@ class LycoEnvironment:
         self._update_arrival_signal(arrivals)
         self._record_availability(state)
         self._release_pending_results(state)
+        # equation (5): actual remote capacities include node availability.
         edge_capacity = (
             float(self.config.resources["edge_cpu_hz"])
             * self.config.slot_seconds
@@ -1333,6 +1359,7 @@ class LycoEnvironment:
             slot,
             cloud_to_edge_remaining,
         )
+        # equation (15): sampling energy plus the CPU/transmission increments in this slot.
         energy_this_slot = [
             float(self.config.energy["sampling_j_per_slot"])
             for _ in range(self.sensors)
@@ -1352,8 +1379,9 @@ class LycoEnvironment:
         radio_remaining = self._process_local_results(state, context, energy_this_slot)
         self._process_source_actions(context, radio_remaining, energy_this_slot)
         for sensor_id, consumed in enumerate(energy_this_slot):
-            self.metrics.record_energy(consumed, sensor_id=sensor_id, slot=slot)
+            self.metrics.record_energy(consumed)
             budget = self.sensor_energy_budgets[sensor_id]
+            # equation (23): per-sensor energy deficit, in joules.
             self.energy_queues[sensor_id].update(arrival=consumed, service=budget)
         workloads = self.controller.queue_workloads(context)
         self.last_service_workloads = {
@@ -1361,7 +1389,7 @@ class LycoEnvironment:
             for name in self.config.service_classes
         }
         self.metrics.record_queue(
-            sum(workloads.values()), max(workloads.values(), default=0.0)
+            sum(workloads.values())
         )
         self._update_queue_growth_signal(workloads)
         if self.learning_feedback is not None:
